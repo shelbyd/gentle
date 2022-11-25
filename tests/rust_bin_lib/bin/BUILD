@@ -1,7 +1,9 @@
-import {rust_binary} from '^core';
+import "^core/rust" as rust;
 
-import {lib} from '//lib';
+export const main = rust::Binary + #{
+  main: "src/main.rs",
 
-export main = rust_binary(
-  main = "src/main.rs",
-);
+  use: #{
+    "lib": "//lib:lib",
+  },
+};

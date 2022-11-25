@@ -1,5 +1,5 @@
-import {rust_library} from '^core';
+import "^core/rust" as rust;
 
-export lib = rust_library(
+export const lib = rust::Library + #{
   root = "src/lib.rs",
-);
+};
