@@ -1,4 +1,5 @@
-use anyhow::Context;
+use include_dir::*;
+use rhai::*;
 use std::path::PathBuf;
 use structopt::*;
 
@@ -34,12 +35,89 @@ fn main() -> anyhow::Result<()> {
 
     match options.command {
         Command::Run { target } => {
-            let file = root.join(&target.package).join("BUILD");
-            let root_build = std::fs::read_to_string(&file).context(format!("reading {file:?}"))?;
-            eprintln!("{root_build}");
-            todo!();
+            let package = target.package;
+            let task = target.task;
+
+            let file = root.join(&package).join("BUILD");
+
+            let mut engine = rhai::Engine::new();
+            engine.set_module_resolver(GentleModuleResolver::default());
+
+            {
+                let task = task.clone();
+                engine.register_custom_syntax(
+                    ["task", "$expr$", "=", "$expr$"],
+                    false,
+                    move |context, inputs| {
+                        let evaled = context.eval_expression_tree(&inputs[0])?;
+                        let name: String = evaled.clone().try_cast().ok_or_else(|| {
+                            EvalAltResult::ErrorMismatchDataType(
+                                "String".to_string(),
+                                evaled.type_name().to_string(),
+                                inputs[0].position(),
+                            )
+                        })?;
+                        if name != task {
+                            return Ok(Dynamic::default());
+                        }
+
+                        Ok(context.eval_expression_tree(&inputs[1])?)
+                    },
+                )?;
+            }
+
+            engine.run_file(file)?;
+            Ok(())
         }
     }
+}
 
-    Ok(())
+type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
+
+static CORE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/core");
+
+struct GentleModuleResolver {
+    file: rhai::module_resolvers::FileModuleResolver,
+}
+
+impl Default for GentleModuleResolver {
+    fn default() -> Self {
+        let file = rhai::module_resolvers::FileModuleResolver::new_with_extension("");
+        GentleModuleResolver { file }
+    }
+}
+
+impl rhai::ModuleResolver for GentleModuleResolver {
+    fn resolve(
+        &self,
+        engine: &Engine,
+        source: Option<&str>,
+        path: &str,
+        pos: Position,
+    ) -> RhaiResult<Shared<Module>> {
+        if let Some(core) = path.strip_prefix("^core/") {
+            let contents = CORE_DIR
+                .get_file(format!("{core}.rhai"))
+                .ok_or(EvalAltResult::ErrorModuleNotFound(path.to_string(), pos))?
+                .contents();
+            let contents_str = String::from_utf8(contents.to_vec()).map_err(|utf8| {
+                EvalAltResult::ErrorSystem(format!("Module '{path}' is not utf-8"), utf8.into())
+            })?;
+            let mut ast = engine.compile(contents_str).map_err(|e| {
+                Box::new(EvalAltResult::ErrorInModule(
+                    path.to_string(),
+                    e.into(),
+                    pos,
+                ))
+            })?;
+
+            ast.set_source(path);
+
+            let module = Module::eval_ast_as_new(Scope::new(), &ast, engine)
+                .map_err(|e| Box::new(EvalAltResult::ErrorInModule(path.to_string(), e, pos)))?;
+            return Ok(module.into());
+        }
+
+        self.file.resolve(engine, source, path, pos)
+    }
 }

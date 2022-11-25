@@ -1,9 +1,9 @@
 import "^core/rust" as rust;
 
-export const main = rust::Binary + #{
+task "main" = rust::binary(#{
   main: "src/main.rs",
 
-  use: #{
+  crates: #{
     "lib": "//lib:lib",
   },
-};
+});

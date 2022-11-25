@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.66"
+dashmap = "5.4.0"
+include_dir = "0.7.3"
+rhai = { version = "1.11.0", features = ["sync"] }
 structopt = "0.3.26"
 thiserror = "1.0.37"
 
