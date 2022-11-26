@@ -4,6 +4,7 @@ use std::{path::PathBuf, process::Command as StdCommand};
 use structopt::*;
 
 mod target;
+use target::*;
 
 #[derive(StructOpt, Debug)]
 struct Options {
@@ -21,7 +22,7 @@ enum Command {
     Run {
         // TODO(shelbyd): Support multiple targets.
         /// Target to run.
-        target: target::Target,
+        target: Target,
     },
 }
 
@@ -35,63 +36,7 @@ fn main() -> anyhow::Result<()> {
 
     match options.command {
         Command::Run { target } => {
-            let package = target.package;
-            let task = target.task;
-
-            let dir = root.join(&package);
-            let file = dir.join("BUILD");
-
-            let mut engine = rhai::Engine::new();
-            engine.set_module_resolver(GentleModuleResolver::default());
-            engine.set_max_expr_depths(0, 0);
-
-            {
-                let task = task.clone();
-                engine.register_custom_syntax(
-                    ["task", "$expr$", "=", "$expr$"],
-                    false,
-                    move |context, inputs| {
-                        let evaled = context.eval_expression_tree(&inputs[0])?;
-                        let name: String = evaled.clone().try_cast().ok_or_else(|| {
-                            EvalAltResult::ErrorMismatchDataType(
-                                "String".to_string(),
-                                evaled.type_name().to_string(),
-                                inputs[0].position(),
-                            )
-                        })?;
-                        if name != task {
-                            return Ok(Dynamic::default());
-                        }
-
-                        Ok(context.eval_expression_tree(&inputs[1])?)
-                    },
-                )?;
-            }
-
-            let mut gtl_module = Module::new();
-            gtl_module.set_native_fn(
-                "exec",
-                move |ctx: NativeCallContext<'_>, cmd: String, args: Array| {
-                    dbg!(&cmd, &args);
-                    let mut command = StdCommand::new(cmd);
-                    command.current_dir(&dir);
-                    for arg in args {
-                        command.arg(arg.to_string());
-                    }
-                    let output = command.output().unwrap();
-                    if output.status.success() {
-                        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-                    } else {
-                        Err(Box::new(EvalAltResult::ErrorRuntime(
-                            Dynamic::from(String::from_utf8_lossy(&output.stderr).to_string()),
-                            ctx.position(),
-                        )))
-                    }
-                },
-            );
-            engine.register_static_module("gtl", gtl_module.into());
-
-            engine.run_file(file)?;
+            run_single_task(root, target)?;
             Ok(())
         }
     }
@@ -145,4 +90,83 @@ impl rhai::ModuleResolver for GentleModuleResolver {
 
         self.file.resolve(engine, source, path, pos)
     }
+}
+
+fn run_single_task(root: PathBuf, target: Target) -> RhaiResult<Dynamic> {
+    let package = target.package;
+    let task = target.task;
+
+    let file = root.join(&package).join("BUILD");
+    let task = task.to_string();
+
+    let out_dir = "/home/shelby/.gentle";
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    let mut engine = rhai::Engine::new();
+    engine.set_module_resolver(GentleModuleResolver::default());
+    engine.set_max_expr_depths(0, 0);
+
+    {
+        let task = task.clone();
+        engine.register_custom_syntax(
+            ["task", "$expr$", "=", "$expr$"],
+            false,
+            move |context, inputs| {
+                let evaled = context.eval_expression_tree(&inputs[0])?;
+                let name: String = evaled.clone().try_cast().ok_or_else(|| {
+                    EvalAltResult::ErrorMismatchDataType(
+                        "String".to_string(),
+                        evaled.type_name().to_string(),
+                        inputs[0].position(),
+                    )
+                })?;
+                if name != task {
+                    return Ok(Dynamic::default());
+                }
+
+                Err(Box::new(EvalAltResult::Return(
+                    context.eval_expression_tree(&inputs[1])?,
+                    inputs[1].position(),
+                )))
+            },
+        )?;
+    }
+
+    let mut gtl_module = Module::new();
+    {
+        let file = file.clone();
+        gtl_module.set_native_fn(
+            "exec",
+            move |ctx: NativeCallContext<'_>, cmd: &str, args: Array| {
+                let mut command = StdCommand::new(cmd);
+                command.current_dir(&file.parent().unwrap());
+                for arg in args {
+                    command.arg(arg.to_string());
+                }
+                let output = command.output().unwrap();
+                if output.status.success() {
+                    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+                } else {
+                    Err(Box::new(EvalAltResult::ErrorRuntime(
+                        Dynamic::from(String::from_utf8_lossy(&output.stderr).to_string()),
+                        ctx.position(),
+                    )))
+                }
+            },
+        );
+    }
+    gtl_module.set_native_fn("action_run", |bin: &str| {
+        let mut command = StdCommand::new(bin);
+        let _ = command.status().unwrap();
+        Ok(())
+    });
+    gtl_module.set_native_fn("build", move |task: &str| {
+        let target: Target = task.parse().unwrap();
+        run_single_task(root.clone(), target)
+    });
+    gtl_module.set_var("out_dir", "/home/shelby/.gentle");
+    gtl_module.set_var("current_taskname", task);
+    engine.register_static_module("gtl", gtl_module.into());
+
+    engine.eval_file(file)
 }
