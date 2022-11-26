@@ -45,7 +45,7 @@ fn binary(args) {
       args.main,
     ]);
 
-    gtl::action_run(bin_out);
+    gtl::action_test(bin_out, ["--color=always"]);
 
     return;
   }

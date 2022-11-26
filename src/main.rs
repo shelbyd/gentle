@@ -46,6 +46,7 @@ fn main() -> anyhow::Result<()> {
         }
         Action::Test { target } => {
             run_single_task(root, "test", target)?;
+            eprintln!("All tests passed");
         }
     }
 
@@ -167,6 +168,27 @@ fn run_single_task(root: PathBuf, action: &str, target: TargetAddress) -> RhaiRe
         let _ = command.status().unwrap();
         Ok(())
     });
+    gtl_module.set_native_fn(
+        "action_test",
+        |ctx: NativeCallContext<'_>, bin: &str, args: Array| {
+            let mut command = StdCommand::new(bin);
+            for arg in args {
+                command.arg(arg.to_string());
+            }
+
+            let out = command.output().unwrap();
+            if out.status.success() {
+                Ok(())
+            } else {
+                eprintln!("{}", String::from_utf8_lossy(&out.stdout));
+
+                Err(Box::new(EvalAltResult::ErrorRuntime(
+                    Dynamic::from("Test failed"),
+                    ctx.position(),
+                )))
+            }
+        },
+    );
     gtl_module.set_native_fn("build", move |task: &str| {
         let target: TargetAddress = task.parse().unwrap();
         run_single_task(root.clone(), "build", target)
