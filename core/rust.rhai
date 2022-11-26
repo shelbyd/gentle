@@ -5,10 +5,6 @@ fn binary(args) {
     return;
   }
 
-  if gtl::current_action != "build" {
-    throw `Unrecognized action ${gtl::current_action}`;
-  }
-
   let defaults = #{
     edition: "2021",
     crates: #{},
@@ -22,18 +18,39 @@ fn binary(args) {
     externs.push(`--extern=${crate_name}=${built.rlib}`);
   }
 
-  let bin_out = `${gtl::out_dir}/${gtl::current_identifier}`;
-
-  gtl::exec("rustc", externs + [
+  let common_args = externs + [
     "--color=always",
     `--edition=${args.edition}`,
-    `-o${bin_out}`,
-    args.main,
-  ]);
+  ];
 
-  #{
-    bin: bin_out,
+  if gtl::current_action == "build" {
+    let bin_out = `${gtl::out_dir}/${gtl::current_identifier}`;
+
+    gtl::exec("rustc", common_args + [
+      `-o${bin_out}`,
+      args.main,
+    ]);
+
+    return #{
+      bin: bin_out,
+    };
   }
+
+  if gtl::current_action == "test" {
+    let bin_out = `${gtl::out_dir}/${gtl::current_identifier}-test`;
+
+    gtl::exec("rustc", common_args + [
+      `-o${bin_out}`,
+      `--test`,
+      args.main,
+    ]);
+
+    gtl::action_run(bin_out);
+
+    return;
+  }
+
+  throw `Unrecognized action ${gtl::current_action}`;
 }
 
 fn library(args) {

@@ -27,7 +27,8 @@ enum Action {
 
     Test {
         /// Targets to run, supports matching.
-        matchers: Vec<TargetMatcher>,
+        // TODO(shelbyd): Use TargetMatcher instead.
+        target: TargetAddress,
     },
 }
 
@@ -42,12 +43,13 @@ fn main() -> anyhow::Result<()> {
     match options.action {
         Action::Run { target } => {
             run_single_task(root, "run", target)?;
-            Ok(())
         }
-        Action::Test { matchers } => {
-            todo!();
+        Action::Test { target } => {
+            run_single_task(root, "test", target)?;
         }
     }
+
+    Ok(())
 }
 
 type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
