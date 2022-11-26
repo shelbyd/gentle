@@ -1,6 +1,6 @@
 use include_dir::*;
 use rhai::*;
-use std::path::PathBuf;
+use std::{path::PathBuf, process::Command as StdCommand};
 use structopt::*;
 
 mod target;
@@ -38,10 +38,12 @@ fn main() -> anyhow::Result<()> {
             let package = target.package;
             let task = target.task;
 
-            let file = root.join(&package).join("BUILD");
+            let dir = root.join(&package);
+            let file = dir.join("BUILD");
 
             let mut engine = rhai::Engine::new();
             engine.set_module_resolver(GentleModuleResolver::default());
+            engine.set_max_expr_depths(0, 0);
 
             {
                 let task = task.clone();
@@ -65,6 +67,29 @@ fn main() -> anyhow::Result<()> {
                     },
                 )?;
             }
+
+            let mut gtl_module = Module::new();
+            gtl_module.set_native_fn(
+                "exec",
+                move |ctx: NativeCallContext<'_>, cmd: String, args: Array| {
+                    dbg!(&cmd, &args);
+                    let mut command = StdCommand::new(cmd);
+                    command.current_dir(&dir);
+                    for arg in args {
+                        command.arg(arg.to_string());
+                    }
+                    let output = command.output().unwrap();
+                    if output.status.success() {
+                        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+                    } else {
+                        Err(Box::new(EvalAltResult::ErrorRuntime(
+                            Dynamic::from(String::from_utf8_lossy(&output.stderr).to_string()),
+                            ctx.position(),
+                        )))
+                    }
+                },
+            );
+            engine.register_static_module("gtl", gtl_module.into());
 
             engine.run_file(file)?;
             Ok(())
