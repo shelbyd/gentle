@@ -1,12 +1,12 @@
 use std::str::FromStr;
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Target {
+pub struct TargetAddress {
     pub package: String,
-    pub task: String,
+    pub identifier: String,
 }
 
-impl FromStr for Target {
+impl FromStr for TargetAddress {
     type Err = TargetParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -21,9 +21,9 @@ impl FromStr for Target {
             .ok_or(TargetParseError::PackageMustBeAbsolute)?
             .to_string();
 
-        Ok(Target {
+        Ok(TargetAddress {
             package,
-            task: split
+            identifier: split
                 .next()
                 .ok_or(TargetParseError::MissingTask)?
                 .to_string(),
@@ -31,9 +31,9 @@ impl FromStr for Target {
     }
 }
 
-impl std::fmt::Display for Target {
+impl std::fmt::Display for TargetAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "//{}:{}", self.package, self.task)
+        write!(f, "//{}:{}", self.package, self.identifier)
     }
 }
 
@@ -57,9 +57,9 @@ mod tests {
     fn fully_qualified() {
         assert_eq!(
             "//foo/bar:baz".parse(),
-            Ok(Target {
+            Ok(TargetAddress {
                 package: "foo/bar".to_string(),
-                task: "baz".to_string(),
+                identifier: "baz".to_string(),
             })
         );
     }
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn missing_task() {
         assert_eq!(
-            "//foo/bar".parse::<Target>(),
+            "//foo/bar".parse::<TargetAddress>(),
             Err(TargetParseError::MissingTask),
         );
     }
@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn missing_package() {
         assert_eq!(
-            ":baz".parse::<Target>(),
+            ":baz".parse::<TargetAddress>(),
             Err(TargetParseError::MissingPackage),
         );
     }
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn relative_target() {
         assert_eq!(
-            "foo/bar:baz".parse::<Target>(),
+            "foo/bar:baz".parse::<TargetAddress>(),
             Err(TargetParseError::PackageMustBeAbsolute),
         );
     }

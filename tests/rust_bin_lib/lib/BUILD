@@ -1,5 +1,5 @@
 import "^core/rust" as rust;
 
-task "lib" = rust::library(#{
+target "lib" = rust::library(#{
    root: "src/lib.rs",
 });

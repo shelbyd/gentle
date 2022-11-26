@@ -22,7 +22,7 @@ fn binary(args) {
     externs.push(`--extern=${crate_name}=${built.rlib}`);
   }
 
-  let bin_out = `${gtl::out_dir}/${gtl::current_taskname}`;
+  let bin_out = `${gtl::out_dir}/${gtl::current_identifier}`;
 
   gtl::exec("rustc", externs + [
     "--color=always",
@@ -43,7 +43,7 @@ fn library(args) {
   };
   let args = defaults + args;
 
-  let rlib_out = `${gtl::out_dir}/${gtl::current_taskname}.rlib`;
+  let rlib_out = `${gtl::out_dir}/${gtl::current_identifier}.rlib`;
 
   gtl::exec("rustc", [
     "--color=always",

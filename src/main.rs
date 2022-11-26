@@ -22,7 +22,7 @@ enum Command {
     Run {
         // TODO(shelbyd): Support multiple targets.
         /// Target to run.
-        target: Target,
+        target: TargetAddress,
     },
 }
 
@@ -92,11 +92,9 @@ impl rhai::ModuleResolver for GentleModuleResolver {
     }
 }
 
-fn run_single_task(root: PathBuf, action: &str, target: Target) -> RhaiResult<Dynamic> {
-    let task = target.task.clone();
-
+fn run_single_task(root: PathBuf, action: &str, target: TargetAddress) -> RhaiResult<Dynamic> {
+    let ident = target.identifier.clone();
     let file = root.join(&target.package).join("BUILD");
-    let task = task.to_string();
 
     let out_dir = "/home/shelby/.gentle";
     std::fs::create_dir_all(&out_dir).unwrap();
@@ -106,9 +104,9 @@ fn run_single_task(root: PathBuf, action: &str, target: Target) -> RhaiResult<Dy
     engine.set_max_expr_depths(0, 0);
 
     {
-        let task = task.clone();
+        let ident = ident.clone();
         engine.register_custom_syntax(
-            ["task", "$expr$", "=", "$expr$"],
+            ["target", "$expr$", "=", "$expr$"],
             false,
             move |context, inputs| {
                 let evaled = context.eval_expression_tree(&inputs[0])?;
@@ -119,7 +117,7 @@ fn run_single_task(root: PathBuf, action: &str, target: Target) -> RhaiResult<Dy
                         inputs[0].position(),
                     )
                 })?;
-                if name != task {
+                if name != ident {
                     return Ok(Dynamic::default());
                 }
 
@@ -160,11 +158,11 @@ fn run_single_task(root: PathBuf, action: &str, target: Target) -> RhaiResult<Dy
         Ok(())
     });
     gtl_module.set_native_fn("build", move |task: &str| {
-        let target: Target = task.parse().unwrap();
+        let target: TargetAddress = task.parse().unwrap();
         run_single_task(root.clone(), "build", target)
     });
     gtl_module.set_var("out_dir", "/home/shelby/.gentle");
-    gtl_module.set_var("current_taskname", task);
+    gtl_module.set_var("current_identifier", ident);
     gtl_module.set_var("current_action", action.to_string());
     gtl_module.set_var("current_target", target.to_string());
 

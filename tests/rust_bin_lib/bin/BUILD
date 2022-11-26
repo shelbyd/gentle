@@ -1,6 +1,6 @@
 import "^core/rust" as rust;
 
-task "main" = rust::binary(#{
+target "main" = rust::binary(#{
   main: "src/main.rs",
 
   crates: #{
