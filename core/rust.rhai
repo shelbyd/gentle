@@ -1,4 +1,14 @@
 fn binary(args) {
+  if gtl::current_action == "run" {
+    let built = gtl::build(gtl::current_target);
+    gtl::action_run(built.bin);
+    return;
+  }
+
+  if gtl::current_action != "build" {
+    throw `Unrecognized action ${gtl::current_action}`;
+  }
+
   let defaults = #{
     edition: "2021",
     crates: #{},
@@ -21,7 +31,9 @@ fn binary(args) {
     args.main,
   ]);
 
-  gtl::action_run(bin_out);
+  #{
+    bin: bin_out,
+  }
 }
 
 fn library(args) {

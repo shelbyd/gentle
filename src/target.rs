@@ -31,6 +31,12 @@ impl FromStr for Target {
     }
 }
 
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "//{}:{}", self.package, self.task)
+    }
+}
+
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum TargetParseError {
     #[error("missing task")]

@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
 
     match options.command {
         Command::Run { target } => {
-            run_single_task(root, target)?;
+            run_single_task(root, "run", target)?;
             Ok(())
         }
     }
@@ -92,11 +92,10 @@ impl rhai::ModuleResolver for GentleModuleResolver {
     }
 }
 
-fn run_single_task(root: PathBuf, target: Target) -> RhaiResult<Dynamic> {
-    let package = target.package;
-    let task = target.task;
+fn run_single_task(root: PathBuf, action: &str, target: Target) -> RhaiResult<Dynamic> {
+    let task = target.task.clone();
 
-    let file = root.join(&package).join("BUILD");
+    let file = root.join(&target.package).join("BUILD");
     let task = task.to_string();
 
     let out_dir = "/home/shelby/.gentle";
@@ -162,10 +161,13 @@ fn run_single_task(root: PathBuf, target: Target) -> RhaiResult<Dynamic> {
     });
     gtl_module.set_native_fn("build", move |task: &str| {
         let target: Target = task.parse().unwrap();
-        run_single_task(root.clone(), target)
+        run_single_task(root.clone(), "build", target)
     });
     gtl_module.set_var("out_dir", "/home/shelby/.gentle");
     gtl_module.set_var("current_taskname", task);
+    gtl_module.set_var("current_action", action.to_string());
+    gtl_module.set_var("current_target", target.to_string());
+
     engine.register_static_module("gtl", gtl_module.into());
 
     engine.eval_file(file)
