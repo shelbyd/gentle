@@ -19,3 +19,5 @@ The easy build system that gets out of your way, like a gentleman.
 - [ ] Deploying
 - [ ] Ctrl+C kills running process
 - [ ] Rust build on a fresh machine
+- [ ] Clean cache
+- [ ] Clean unused cache

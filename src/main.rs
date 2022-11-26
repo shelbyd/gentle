@@ -13,16 +13,21 @@ struct Options {
     #[structopt(long)]
     root: Option<PathBuf>,
 
+    /// Action to perform.
     #[structopt(subcommand)]
-    command: Command,
+    action: Action,
 }
 
 #[derive(StructOpt, Debug)]
-enum Command {
+enum Action {
     Run {
-        // TODO(shelbyd): Support multiple targets.
         /// Target to run.
         target: TargetAddress,
+    },
+
+    Test {
+        /// Targets to run, supports matching.
+        matchers: Vec<TargetMatcher>,
     },
 }
 
@@ -34,10 +39,13 @@ fn main() -> anyhow::Result<()> {
         None => std::env::current_dir()?,
     };
 
-    match options.command {
-        Command::Run { target } => {
+    match options.action {
+        Action::Run { target } => {
             run_single_task(root, "run", target)?;
             Ok(())
+        }
+        Action::Test { matchers } => {
+            todo!();
         }
     }
 }
