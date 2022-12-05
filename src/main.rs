@@ -53,14 +53,19 @@ impl Display for Action {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct Config {
     skip: HashSet<String>,
 }
 
 fn main() -> anyhow::Result<()> {
     let options = Options::from_args();
-    let config: Config = toml::from_slice(&std::fs::read(&options.config_file)?)?;
+
+    let config = if let Ok(file) = std::fs::read(&options.config_file) {
+        toml::from_slice(&file)?
+    } else {
+        Config::default()
+    };
 
     match options.command {
         Command::Action(action) => {
