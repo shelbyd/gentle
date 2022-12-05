@@ -1,6 +1,6 @@
 [package]
 name = "gentle"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Shelby Doolittle <shelby@shelbyd.com>"]
 description = "The low-configuration build system that gets out of your way, like a gentleman."
