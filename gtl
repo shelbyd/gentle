@@ -1,0 +1,22 @@
+#! /usr/bin/env bash
+
+set -euo pipefail
+
+function ensure_gentle_installed() {
+	local bin_loc="$HOME/.gentle/gentle"
+
+	if [[ ! -f "${bin_loc}" ]]; then
+		mkdir -p "$(dirname "${bin_loc}")"
+		curl --silent \
+			--location \
+			-o "${bin_loc}" \
+			"https://github.com/shelbyd/gentle/releases/latest/download/gentle"
+		chmod +x "${bin_loc}"
+	fi
+
+	echo -n "${bin_loc}"
+}
+
+gentle_binary="$(ensure_gentle_installed)"
+
+exec "${gentle_binary}" "$@"
