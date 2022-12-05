@@ -19,7 +19,7 @@ mod targets;
 
 #[derive(StructOpt)]
 struct Options {
-    #[structopt(long, default_value = "./build/config.toml")]
+    #[structopt(long, default_value = "./gentle.toml")]
     config_file: PathBuf,
 
     #[structopt(subcommand)]
