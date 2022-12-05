@@ -1,80 +1,185 @@
-//! Move files between project directory and a cache directory.
-//!
-//! Moves for better performance by not copying bytes, instead just updating inodes.
-
-use anyhow::Context;
-use std::{collections::*, fs::*, path::*};
+use std::{collections::*, path::*};
+use vfs::*;
 
 pub fn load(from: PathBuf) -> anyhow::Result<()> {
-    if !from.exists() {
-        // The cache isn't guaranteed to exist. The rest of the method will
-        // fail if the cache does not exist.
-        return Ok(());
-    }
+    let fs = PhysicalFS::new("/");
+    let cache = Cache::new(
+        &fs,
+        &path_to_string(from)?,
+        &path_to_string(std::env::current_dir()?)?,
+    );
 
-    let src_dir = std::env::current_dir()?;
-
-    let relative_dir = from.join("relative");
-    let relative = walkdir::WalkDir::new(&relative_dir)
-        .into_iter()
-        .flat_map(|r| r.ok())
-        .filter_map(into_file_path);
-
-    for path in relative {
-        let to = src_dir.join(path.strip_prefix(&relative_dir).unwrap());
-        move_file(path, to)?;
-    }
-
-    let absolute_dir = from.join("absolute");
-    let absolute = walkdir::WalkDir::new(&absolute_dir)
-        .into_iter()
-        .flat_map(|r| r.ok())
-        .filter_map(into_file_path);
-
-    for path in absolute {
-        let to = PathBuf::from("/").join(&path.strip_prefix(&absolute_dir).unwrap());
-        move_file(path, to)?;
-    }
+    cache.load()?;
 
     Ok(())
 }
 
-fn into_file_path(entry: walkdir::DirEntry) -> Option<PathBuf> {
-    if entry.file_type().is_file() {
-        Some(entry.into_path())
-    } else {
-        None
-    }
+fn path_to_string(path: PathBuf) -> anyhow::Result<String> {
+    path.to_str()
+        .ok_or(anyhow::anyhow!("path not unicode: {path:?}"))
+        .map(|s| s.to_string())
 }
 
 pub fn save(to: PathBuf) -> anyhow::Result<()> {
+    let fs = PhysicalFS::new("/");
+    let cache = Cache::new(
+        &fs,
+        &path_to_string(to)?,
+        &path_to_string(std::env::current_dir()?)?,
+    );
+
     let cache_paths = crate::targets::targets()?
         .into_iter()
         .flat_map(|t| t.cache_paths())
-        .collect::<HashSet<PathBuf>>()
-        .into_iter()
-        .flat_map(|p| walkdir::WalkDir::new(p))
-        .filter_map(|r| into_file_path(r.ok()?));
+        .map(path_to_string)
+        .collect::<Result<HashSet<String>, _>>()?;
 
     for path in cache_paths {
-        if path.is_relative() {
-            move_file(&path, to.join("relative").join(&path))?;
-        } else {
-            move_file(
-                &path,
-                to.join("absolute").join(&path.strip_prefix("/").unwrap()),
-            )?;
-        }
+        cache.save(&path)?;
     }
 
     Ok(())
 }
 
-fn move_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> anyhow::Result<()> {
-    let (from, to) = (from.as_ref(), to.as_ref());
+struct Cache<'f, F: FileSystem> {
+    fs: &'f F,
+    cache: String,
+    pwd: String,
+}
 
-    create_dir_all(to.parent().unwrap()).context("Creating parent directory")?;
-    rename(from, to).context("Renaming file")?;
+impl<'f, F: FileSystem> Cache<'f, F> {
+    fn new(fs: &'f F, cache: impl AsRef<str>, pwd: impl AsRef<str>) -> Self {
+        Self {
+            fs,
+            cache: cache.as_ref().to_string(),
+            pwd: pwd.as_ref().to_string(),
+        }
+    }
 
-    Ok(())
+    fn save(&self, path: &str) -> anyhow::Result<()> {
+        if path.starts_with("/") {
+            self.copy_into(path, &format!("{}/absolute{path}", self.cache))?;
+        } else {
+            self.copy_into(
+                &format!("{}/{path}", self.pwd),
+                &format!("{}/relative/{path}", self.cache),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn copy_into(&self, from: &str, to: &str) -> anyhow::Result<()> {
+        if !self.fs.exists(from)? {
+            return Ok(());
+        }
+
+        match self.fs.metadata(from)?.file_type {
+            VfsFileType::File => {
+                let mut read = self.fs.open_file(from)?;
+                let mut write = self.fs.create_file(to)?;
+
+                std::io::copy(&mut read, &mut write)?;
+            }
+
+            VfsFileType::Directory => {
+                self.create_dir_all(to)?;
+
+                for file in self.fs.read_dir(from)? {
+                    self.copy_into(
+                        &format!("{from}/{file}"),
+                        &format!("{to}/{file}").replace("//", "/"),
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn create_dir_all(&self, dir: &str) -> anyhow::Result<()> {
+        if self.fs.exists(dir)? {
+            return Ok(());
+        }
+
+        let (parent, _) = dir.rsplit_once("/").unwrap();
+        self.create_dir_all(parent)?;
+        self.fs.create_dir(dir)?;
+
+        Ok(())
+    }
+
+    fn load(&self) -> anyhow::Result<()> {
+        self.copy_into(&format!("{}/absolute", self.cache), "/")?;
+        self.copy_into(&format!("{}/relative", self.cache), &self.pwd)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_load_single_file() {
+        let fs = MemoryFS::new();
+        fs.create_dir("/src").unwrap();
+        write!(fs.create_file("/src/foo.txt").unwrap(), "foo").unwrap();
+
+        let cache = Cache::new(&fs, "/cache", "/project");
+
+        cache.save("/src").unwrap();
+        fs.remove_file("/src/foo.txt").unwrap();
+        cache.load().unwrap();
+
+        let mut foo = String::new();
+        fs.open_file("/src/foo.txt")
+            .unwrap()
+            .read_to_string(&mut foo)
+            .unwrap();
+        assert_eq!(foo, "foo");
+    }
+
+    #[test]
+    fn subdirectory() {
+        let fs = MemoryFS::new();
+        fs.create_dir("/src").unwrap();
+        fs.create_dir("/src/subdir").unwrap();
+        write!(fs.create_file("/src/subdir/foo.txt").unwrap(), "foo").unwrap();
+
+        let cache = Cache::new(&fs, "/cache", "/project");
+
+        cache.save("/src").unwrap();
+        fs.remove_file("/src/subdir/foo.txt").unwrap();
+        fs.remove_dir("/src/subdir").unwrap();
+        cache.load().unwrap();
+
+        let mut foo = String::new();
+        fs.open_file("/src/subdir/foo.txt")
+            .unwrap()
+            .read_to_string(&mut foo)
+            .unwrap();
+        assert_eq!(foo, "foo");
+    }
+
+    #[test]
+    fn relative_path() {
+        let fs = MemoryFS::new();
+        fs.create_dir("/project").unwrap();
+        fs.create_dir("/project/src").unwrap();
+        write!(fs.create_file("/project/src/foo.txt").unwrap(), "foo").unwrap();
+
+        let cache = Cache::new(&fs, "/cache", "/project");
+
+        cache.save("src").unwrap();
+        fs.remove_file("/project/src/foo.txt").unwrap();
+        fs.remove_dir("/project/src").unwrap();
+        cache.load().unwrap();
+
+        let mut foo = String::new();
+        fs.open_file("/project/src/foo.txt")
+            .unwrap()
+            .read_to_string(&mut foo)
+            .unwrap();
+        assert_eq!(foo, "foo");
+    }
 }

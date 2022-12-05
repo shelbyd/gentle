@@ -5,7 +5,6 @@ edition = "2021"
 authors = ["Shelby Doolittle <shelby@shelbyd.com>"]
 description = "The low-configuration build system that gets out of your way, like a gentleman."
 
-
 [dependencies]
 anyhow = "1.0.66"
 humantime = "2.1.0"
@@ -17,4 +16,5 @@ num_cpus = "1.14.0"
 serde = { version = "1.0.148", features = ["derive"] }
 structopt = "0.3.26"
 toml = "0.5.9"
+vfs = "0.8.0"
 walkdir = "2.3.2"
