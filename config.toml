@@ -1,0 +1,12 @@
+skip = [
+  "//module_support/rust/types:rust_crate",
+  "//modules/cardano/adawallet:rust_crate",
+  "//modules/sign/sample-sign:rust_crate",
+  "//modules/near/nearrpc:rust_crate",
+  "//modules/near/nearwallet:rust_crate",
+  "//fuzz:rust_crate",
+  "//proto/gen/rust:rust_crate",
+  "//module_support/go:go_mod",
+  "//module_support/go/examples/data:go_mod",
+  "//modules/cosmos/nebula:go_mod",
+]

@@ -1,207 +1,225 @@
-use include_dir::*;
-use rhai::*;
-use std::{path::PathBuf, process::Command as StdCommand};
+use indicatif::*;
+use is_terminal::*;
+use serde::*;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    path::*,
+    time::{Duration, Instant},
+};
+
 use structopt::*;
 
-mod target;
-use target::*;
+mod cache;
 
-#[derive(StructOpt, Debug)]
+mod multi_runner;
+use multi_runner::*;
+
+mod targets;
+
+#[derive(StructOpt)]
 struct Options {
-    /// The root directory to work against. Will be inferred based on the current directory if not
-    /// provided.
-    #[structopt(long)]
-    root: Option<PathBuf>,
+    #[structopt(long, default_value = "./build/config.toml")]
+    config_file: PathBuf,
 
-    /// Action to perform.
     #[structopt(subcommand)]
-    action: Action,
+    command: Command,
 }
 
-#[derive(StructOpt, Debug)]
-enum Action {
-    Run {
-        /// Target to run.
-        target: TargetAddress,
+#[derive(StructOpt)]
+pub enum Command {
+    CacheLoad {
+        from: PathBuf,
+    },
+    CacheSave {
+        to: PathBuf,
     },
 
-    Test {
-        /// Targets to run, supports matching.
-        // TODO(shelbyd): Use TargetMatcher instead.
-        target: TargetAddress,
-    },
+    // TODO(shelbyd): Allow multiple actions.
+    #[structopt(flatten)]
+    Action(Action),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, StructOpt)]
+pub enum Action {
+    Test,
+}
+
+impl Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Test => write!(f, "test"),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Config {
+    skip: HashSet<String>,
 }
 
 fn main() -> anyhow::Result<()> {
     let options = Options::from_args();
+    let config: Config = toml::from_slice(&std::fs::read(&options.config_file)?)?;
 
-    let root = match options.root {
-        Some(r) => r,
-        None => std::env::current_dir()?,
-    };
+    match options.command {
+        Command::Action(action) => {
+            let targets = targets::targets()?
+                .into_iter()
+                .filter(|t| !config.skip.contains(&t.to_string()))
+                .collect::<Vec<_>>();
 
-    match options.action {
-        Action::Run { target } => {
-            run_single_task(root, "run", target)?;
+            let progress: Box<dyn ProgressListener> =
+                if std::env::var("CI") == Ok(String::from("true")) {
+                    Box::new(ContinuousIntegrationProgress::new(targets.len()))
+                } else if std::io::stderr().is_terminal() {
+                    Box::new(TermProgress::new())
+                } else {
+                    Box::new(NullProgressListener)
+                };
+            let mut runner = ParRunner::new(progress);
+
+            for target in targets {
+                if config.skip.contains(&target.to_string()) {
+                    continue;
+                }
+
+                runner
+                    .run(&format!("{action} {target}"), move || match action {
+                        Action::Test => target.perform_test(),
+                    })
+                    .map_err(|(id, err)| err.context(id))?;
+            }
+            runner.into_wait().map_err(|(id, err)| err.context(id))?;
         }
-        Action::Test { target } => {
-            run_single_task(root, "test", target)?;
-            eprintln!("All tests passed");
-        }
+
+        Command::CacheLoad { from } => cache::load(from)?,
+        Command::CacheSave { to } => cache::save(to)?,
     }
 
     Ok(())
 }
 
-type RhaiResult<T> = Result<T, Box<EvalAltResult>>;
-
-static CORE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/core");
-
-struct GentleModuleResolver {
-    file: rhai::module_resolvers::FileModuleResolver,
+struct TermProgress {
+    multi: MultiProgress,
+    bars: Vec<(ProgressBar, Option<String>)>,
 }
 
-impl Default for GentleModuleResolver {
-    fn default() -> Self {
-        let file = rhai::module_resolvers::FileModuleResolver::new_with_extension("");
-        GentleModuleResolver { file }
+impl TermProgress {
+    fn new() -> Self {
+        TermProgress {
+            multi: MultiProgress::new(),
+            bars: Default::default(),
+        }
     }
 }
 
-impl rhai::ModuleResolver for GentleModuleResolver {
-    fn resolve(
-        &self,
-        engine: &Engine,
-        source: Option<&str>,
-        path: &str,
-        pos: Position,
-    ) -> RhaiResult<Shared<Module>> {
-        if let Some(core) = path.strip_prefix("^core/") {
-            let contents = CORE_DIR
-                .get_file(format!("{core}.rhai"))
-                .ok_or(EvalAltResult::ErrorModuleNotFound(path.to_string(), pos))?
-                .contents();
-            let contents_str = String::from_utf8(contents.to_vec()).map_err(|utf8| {
-                EvalAltResult::ErrorSystem(format!("Module '{path}' is not utf-8"), utf8.into())
-            })?;
-            let mut ast = engine.compile(contents_str).map_err(|e| {
-                Box::new(EvalAltResult::ErrorInModule(
-                    path.to_string(),
-                    e.into(),
-                    pos,
-                ))
-            })?;
+impl Drop for TermProgress {
+    fn drop(&mut self) {
+        for (bar, _) in &self.bars {
+            bar.finish_and_clear();
+        }
+    }
+}
 
-            ast.set_source(path);
+impl ProgressListener for TermProgress {
+    fn on_start(&mut self, name: &str) {
+        for (bar, running) in &mut self.bars {
+            if running.is_some() {
+                continue;
+            }
 
-            let module = Module::eval_ast_as_new(Scope::new(), &ast, engine)
-                .map_err(|e| Box::new(EvalAltResult::ErrorInModule(path.to_string(), e, pos)))?;
-            return Ok(module.into());
+            bar.set_message(name.to_string());
+            bar.reset();
+            *running = Some(name.to_string());
+            return;
         }
 
-        self.file.resolve(engine, source, path, pos)
+        let p = self.multi.add(ProgressBar::new_spinner());
+        p.set_message(name.to_string());
+        p.enable_steady_tick(Duration::from_millis(50));
+
+        self.bars.push((p, Some(name.to_string())));
+    }
+
+    fn on_finish(&mut self, name: &str) {
+        let (bar, running) = self
+            .bars
+            .iter_mut()
+            .find(|(_, r)| r.as_ref() == Some(&name.to_string()))
+            .expect("called on_finish without on_start");
+
+        *running = None;
+        bar.set_message("");
+        bar.finish();
     }
 }
 
-fn run_single_task(root: PathBuf, action: &str, target: TargetAddress) -> RhaiResult<Dynamic> {
-    let ident = target.identifier.clone();
-    let file = root.join(&target.package).join("BUILD");
+#[derive(Default)]
+struct ContinuousIntegrationProgress {
+    total: usize,
+    running: HashMap<String, Instant>,
+    finished: HashMap<String, Duration>,
+}
 
-    let out_dir = "/home/shelby/.gentle";
-    std::fs::create_dir_all(&out_dir).unwrap();
+impl ContinuousIntegrationProgress {
+    fn new(total: usize) -> Self {
+        eprintln!("Running {total} tasks");
 
-    let mut engine = rhai::Engine::new();
-    engine.set_module_resolver(GentleModuleResolver::default());
-    engine.set_max_expr_depths(0, 0);
-
-    {
-        let ident = ident.clone();
-        engine.register_custom_syntax(
-            ["target", "$expr$", "=", "$expr$"],
-            false,
-            move |context, inputs| {
-                let evaled = context.eval_expression_tree(&inputs[0])?;
-                let name: String = evaled.clone().try_cast().ok_or_else(|| {
-                    EvalAltResult::ErrorMismatchDataType(
-                        "String".to_string(),
-                        evaled.type_name().to_string(),
-                        inputs[0].position(),
-                    )
-                })?;
-                if name != ident {
-                    return Ok(Dynamic::default());
-                }
-
-                Err(Box::new(EvalAltResult::Return(
-                    context.eval_expression_tree(&inputs[1])?,
-                    inputs[1].position(),
-                )))
-            },
-        )?;
+        ContinuousIntegrationProgress {
+            total,
+            running: Default::default(),
+            finished: Default::default(),
+        }
     }
 
-    let mut gtl_module = Module::new();
-    {
-        let file = file.clone();
-        gtl_module.set_native_fn(
-            "exec",
-            move |ctx: NativeCallContext<'_>, cmd: &str, args: Array| {
-                let mut command = StdCommand::new(cmd);
-                command.current_dir(&file.parent().unwrap());
-                for arg in args {
-                    command.arg(arg.to_string());
-                }
-                let output = command.output().unwrap();
-                if output.status.success() {
-                    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-                } else {
-                    Err(Box::new(EvalAltResult::ErrorRuntime(
-                        Dynamic::from(String::from_utf8_lossy(&output.stderr).to_string()),
-                        ctx.position(),
-                    )))
-                }
-            },
+    fn log_status(&self) {
+        eprintln!(
+            "Running {}, finished {} / {}",
+            self.running.len(),
+            self.finished.len(),
+            self.total
         );
+        for (name, started) in &self.running {
+            eprintln!(
+                "  {name}: {}",
+                humantime::format_duration(started.elapsed())
+            );
+        }
     }
-    gtl_module.set_native_fn("action_run", |bin: &str| {
-        let mut command = StdCommand::new(bin);
-        let _ = command.status().unwrap();
-        Ok(())
-    });
-    gtl_module.set_native_fn(
-        "action_test",
-        |ctx: NativeCallContext<'_>, bin: &str, args: Array| {
-            let mut command = StdCommand::new(bin);
-            for arg in args {
-                command.arg(arg.to_string());
-            }
+}
 
-            let out = command.output().unwrap();
-            if out.status.success() {
-                Ok(())
-            } else {
-                eprintln!("{}", String::from_utf8_lossy(&out.stdout));
+impl ProgressListener for ContinuousIntegrationProgress {
+    fn on_start(&mut self, name: &str) {
+        eprintln!("Starting {name}");
+        self.running.insert(name.to_string(), Instant::now());
 
-                Err(Box::new(EvalAltResult::ErrorRuntime(
-                    Dynamic::from("Test failed"),
-                    ctx.position(),
-                )))
-            }
-        },
-    );
-    gtl_module.set_native_fn("build", move |task: &str| {
-        let target: TargetAddress = task.parse().unwrap();
-        run_single_task(root.clone(), "build", target)
-    });
-    gtl_module.set_native_fn("build", |ctx: NativeCallContext<'_>, f: FnPtr| {
-        f.call_within_context::<Dynamic>(&ctx, ())
-    });
-    gtl_module.set_var("out_dir", "/home/shelby/.gentle");
-    gtl_module.set_var("current_identifier", ident);
-    gtl_module.set_var("current_action", action.to_string());
-    gtl_module.set_var("current_target", target.to_string());
+        self.log_status();
+    }
 
-    engine.register_static_module("gtl", gtl_module.into());
+    fn on_finish(&mut self, name: &str) {
+        let started_at = self
+            .running
+            .remove(name)
+            .expect("called on_finish without on_start");
+        let took = started_at.elapsed();
+        eprintln!("Finished {name} in {}", humantime::format_duration(took));
 
-    engine.eval_file(file)
+        self.finished.insert(name.to_string(), took);
+
+        self.log_status();
+    }
+}
+
+impl Drop for ContinuousIntegrationProgress {
+    fn drop(&mut self) {
+        eprintln!("Runtime report:");
+
+        let mut sorted_order = self.finished.drain().collect::<Vec<_>>();
+        sorted_order.sort_by_key(|(_, d)| *d);
+
+        for (name, dur) in sorted_order {
+            eprintln!("  {}: {name}", humantime::format_duration(dur));
+        }
+    }
 }

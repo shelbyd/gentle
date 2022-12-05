@@ -1,0 +1,6 @@
+#! /bin/bash
+
+set -euo pipefail
+
+cargo build --release --manifest-path ./build/Cargo.toml
+./build/target/release/walletos_build $@
