@@ -1,5 +1,9 @@
+use anyhow::Context;
 use std::{collections::*, path::*};
 use vfs::*;
+
+const DEDUPLICATE_LARGER_THAN: u64 = 1024;
+const HASHED_FILE_PREFIX: &[u8] = b"GENTLE HASHED";
 
 pub fn load(from: PathBuf) -> anyhow::Result<()> {
     let fs = PhysicalFS::new("/");
@@ -69,16 +73,56 @@ impl<'f, F: FileSystem> Cache<'f, F> {
     }
 
     fn copy_into(&self, from: &str, to: &str) -> anyhow::Result<()> {
-        if !self.fs.exists(from)? {
+        if !self.fs.exists(from).context("Checking file existence")? {
             return Ok(());
         }
 
-        match self.fs.metadata(from)?.file_type {
-            VfsFileType::File => {
-                let mut read = self.fs.open_file(from)?;
-                let mut write = self.fs.create_file(to)?;
+        let metadata = self.fs.metadata(from).context("Getting file metadata")?;
+        match metadata.file_type {
+            VfsFileType::File if metadata.len >= DEDUPLICATE_LARGER_THAN => {
+                let mut hasher = blake3::Hasher::new();
 
-                std::io::copy(&mut read, &mut write)?;
+                let mut src_file = self.fs.open_file(from)?;
+                std::io::copy(&mut src_file, &mut hasher)?;
+                let hash = hasher.finalize().to_hex();
+
+                self.create_dir_all(&format!("{}/large_files", self.cache))?;
+                let contents_path = format!("{}/large_files/{hash}", self.cache);
+                if !self.fs.exists(&contents_path)? {
+                    let mut contents_dest = self
+                        .fs
+                        .create_file(&format!("{}/large_files/{hash}", self.cache))?;
+                    src_file.rewind()?;
+                    std::io::copy(&mut src_file, &mut contents_dest)?;
+                }
+
+                let mut write = self.fs.create_file(to)?;
+                write.write_all(HASHED_FILE_PREFIX)?;
+                write.write_all(hash.as_ref().as_bytes())?;
+            }
+
+            VfsFileType::File => {
+                let mut read = self
+                    .fs
+                    .open_file(from)
+                    .context(format!("Opening {from:?}"))?;
+                let mut write = self
+                    .fs
+                    .create_file(to)
+                    .context(format!("Creating {to:?}"))?;
+
+                let mut contents = Vec::new();
+                read.read_to_end(&mut contents)?;
+                if contents.starts_with(HASHED_FILE_PREFIX) {
+                    let hash = blake3::Hash::from_hex(&contents[HASHED_FILE_PREFIX.len()..])?;
+
+                    let mut contents = self
+                        .fs
+                        .open_file(&format!("{}/large_files/{hash}", self.cache))?;
+                    std::io::copy(&mut contents, &mut write)?;
+                } else {
+                    write.write_all(&contents)?;
+                }
             }
 
             VfsFileType::Directory => {
@@ -109,8 +153,10 @@ impl<'f, F: FileSystem> Cache<'f, F> {
     }
 
     fn load(&self) -> anyhow::Result<()> {
-        self.copy_into(&format!("{}/absolute", self.cache), "/")?;
-        self.copy_into(&format!("{}/relative", self.cache), &self.pwd)?;
+        self.copy_into(&format!("{}/absolute", self.cache), "/")
+            .context("Loading absolute paths")?;
+        self.copy_into(&format!("{}/relative", self.cache), &self.pwd)
+            .context("Loading relative paths")?;
         Ok(())
     }
 }
@@ -181,5 +227,73 @@ mod tests {
             .read_to_string(&mut foo)
             .unwrap();
         assert_eq!(foo, "foo");
+    }
+
+    #[test]
+    fn large_duplicate_files_are_only_stored_once() {
+        let fs = MemoryFS::new();
+        fs.create_dir("/src").unwrap();
+        fs.create_file("/src/foo0.txt")
+            .unwrap()
+            .write_all(&[0; 1024])
+            .unwrap();
+        fs.create_file("/src/foo1.txt")
+            .unwrap()
+            .write_all(&[0; 1024])
+            .unwrap();
+
+        let cache = Cache::new(&fs, "/cache", "/project");
+
+        cache.save("/src").unwrap();
+        fs.remove_file("/src/foo0.txt").unwrap();
+        fs.remove_file("/src/foo1.txt").unwrap();
+
+        let path = VfsPath::from(fs);
+        let total_file_size = path
+            .walk_dir()
+            .unwrap()
+            .map(|r| Ok::<u64, VfsError>(r?.metadata()?.len))
+            .sum::<Result<u64, _>>()
+            .unwrap();
+
+        assert_eq!(
+            total_file_size,
+            1024 + (64 + HASHED_FILE_PREFIX.len() as u64) * 2
+        );
+    }
+
+    #[test]
+    fn recovers_large_files() {
+        let fs = MemoryFS::new();
+        fs.create_dir("/src").unwrap();
+        fs.create_file("/src/foo0.txt")
+            .unwrap()
+            .write_all(&[0; 1024])
+            .unwrap();
+        fs.create_file("/src/foo1.txt")
+            .unwrap()
+            .write_all(&[0; 1024])
+            .unwrap();
+
+        let cache = Cache::new(&fs, "/cache", "/project");
+
+        cache.save("/src").unwrap();
+        fs.remove_file("/src/foo0.txt").unwrap();
+        fs.remove_file("/src/foo1.txt").unwrap();
+        cache.load().unwrap();
+
+        let mut vec = Vec::new();
+        fs.open_file("/src/foo0.txt")
+            .unwrap()
+            .read_to_end(&mut vec)
+            .unwrap();
+        assert_eq!(vec, vec![0; 1024]);
+
+        let mut vec = Vec::new();
+        fs.open_file("/src/foo1.txt")
+            .unwrap()
+            .read_to_end(&mut vec)
+            .unwrap();
+        assert_eq!(vec, vec![0; 1024]);
     }
 }
