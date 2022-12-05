@@ -136,6 +136,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "gentle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "humantime",
+ "ignore",
+ "indicatif",
+ "is-terminal",
+ "linkme",
+ "num_cpus",
+ "serde",
+ "structopt",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "globset"
 version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -533,23 +550,6 @@ dependencies = [
  "same-file",
  "winapi",
  "winapi-util",
-]
-
-[[package]]
-name = "walletos_build"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "humantime",
- "ignore",
- "indicatif",
- "is-terminal",
- "linkme",
- "num_cpus",
- "serde",
- "structopt",
- "toml",
- "walkdir",
 ]
 
 [[package]]
