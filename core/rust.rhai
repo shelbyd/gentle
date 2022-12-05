@@ -73,3 +73,12 @@ fn library(args) {
     rlib: rlib_out,
   }
 }
+
+fn crates_io(crate_name, version, options) {
+  || {
+    debug(crate_name);
+    debug(version);
+    debug(options);
+    throw "Not implemented crates_io";
+  }
+}

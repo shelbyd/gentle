@@ -193,6 +193,9 @@ fn run_single_task(root: PathBuf, action: &str, target: TargetAddress) -> RhaiRe
         let target: TargetAddress = task.parse().unwrap();
         run_single_task(root.clone(), "build", target)
     });
+    gtl_module.set_native_fn("build", |ctx: NativeCallContext<'_>, f: FnPtr| {
+        f.call_within_context::<Dynamic>(&ctx, ())
+    });
     gtl_module.set_var("out_dir", "/home/shelby/.gentle");
     gtl_module.set_var("current_identifier", ident);
     gtl_module.set_var("current_action", action.to_string());
