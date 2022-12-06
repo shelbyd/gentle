@@ -111,9 +111,12 @@ impl<'f, F: FileSystem> Cache<'f, F> {
                     .create_file(to)
                     .context(format!("Creating {to:?}"))?;
 
-                let mut contents = Vec::new();
+                let mut contents = Vec::with_capacity(metadata.len as usize);
                 read.read_to_end(&mut contents)?;
-                if contents.starts_with(HASHED_FILE_PREFIX) {
+
+                let is_hashed = contents.starts_with(HASHED_FILE_PREFIX)
+                    && contents.len() == HASHED_FILE_PREFIX.len() + 64;
+                if is_hashed {
                     let hash = blake3::Hash::from_hex(&contents[HASHED_FILE_PREFIX.len()..])?;
 
                     let mut contents = self
